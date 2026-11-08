@@ -477,7 +477,8 @@ namespace DesktopCat
                 }
                 else
                 {
-                    bool canClimb = AutoWalk && now > nextClimbAt;
+                    // 爬墙暂时关闭：现有素材旋转出来的姿态都不自然，等 Codex 出专用爬墙图再开（见 Codex提示词-爬墙素材.md）
+                    bool canClimb = false && AutoWalk && now > nextClimbAt;
                     if (x < wa.Left)
                     {
                         x = wa.Left;
