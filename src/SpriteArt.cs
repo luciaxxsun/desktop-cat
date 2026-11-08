@@ -638,18 +638,13 @@ namespace DesktopCat
             float s = Math.Min(sA, Math.Min(maxW / bmp.Width, targetH * 1.35f / bmp.Height));
             int w = Math.Max(1, (int)(bmp.Width * s)), h = Math.Max(1, (int)(bmp.Height * s));
 
-            // 1) 缩放；需要镜像就在图片自身坐标里先翻好
+            // 1) 缩放
             using (var src = new Bitmap(w, h, PixelFormat.Format32bppArgb))
             {
                 using (var sg = Graphics.FromImage(src))
                 {
                     sg.InterpolationMode = InterpolationMode.HighQualityBicubic;
                     sg.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                    if (flip)
-                    {
-                        sg.TranslateTransform(w, 0);
-                        sg.ScaleTransform(-1, 1);
-                    }
                     sg.DrawImage(bmp, new Rectangle(0, 0, w, h));
                 }
 
@@ -674,6 +669,21 @@ namespace DesktopCat
                     {
                         rg.DrawImage(src, new RectangleF((cw - w) / 2f, (ch - h) / 2f, w, h));
                     }
+                }
+
+                if (flip)
+                {
+                    var mir = new Bitmap(cw, ch, PixelFormat.Format32bppArgb);
+                    using (var mg = Graphics.FromImage(mir))
+                    {
+                        mg.Clear(Color.Transparent);
+                        mg.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                        mg.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                        mg.TranslateTransform(cw, 0);
+                        mg.ScaleTransform(-1, 1);
+                        mg.DrawImage(rot, 0, 0);
+                    }
+                    rot = mir;
                 }
 
                 // 3) 量不透明边界，用来贴墙/贴顶对齐
@@ -703,7 +713,7 @@ namespace DesktopCat
         public static bool DrawWall(Graphics g, string key, bool wallLeft, bool goingUp, float frameW, float frameH,
             float targetH, float maxW, double t, double phase)
         {
-            float ang = goingUp ? 0f : 90f;                 // GDI+ 正角度=顺时针
+            float ang = goingUp ? -90f : 90f;                // 往上=逆时针90，往下=顺时针90
             bool flip = goingUp ? wallLeft : !wallLeft;
             var rs = BuildRot(key, "walk", ang, flip, targetH, maxW);
             if (rs == null) return false;
