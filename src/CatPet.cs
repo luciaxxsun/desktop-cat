@@ -11,7 +11,7 @@ using System.Windows.Forms;
 namespace DesktopCat
 {
     // ---------------- 状态 ----------------
-    enum PetState { Sit, Walk, Sleep, Drag, Fall }
+    enum PetState { Sit, Walk, Sleep, Drag, Fall, Climb, Ceil }
 
     // ---------------- 主窗口 ----------------
     class PetForm : Form
@@ -72,11 +72,13 @@ namespace DesktopCat
 
         public Palette Palette = Palette.Tabby;
         static bool discovered = false;
-        public float Zoom = 1.0f;
+        public float Zoom = 0.85f;
         public bool AutoWalk = true;
 
         PetState state = PetState.Sit;
         double t0 = 0, stateT = 0, walkPhase = 0, nextWalkAt = 6 + new Random().NextDouble() * 8;
+        int wallSide = -1; double ceilT = 0, nextClimbAt = 10; bool forceClimb = false;
+        readonly Random rng = new Random();
         bool faceRight = true;
         float lookX = 0, lookY = 0, blink = 0, sleepAmt = 0, yawn = 0, kneadPhase = 0, grabHeadDY = 12f;
         double lastTyping = -99, lastInputCheck = 0;
@@ -155,7 +157,7 @@ namespace DesktopCat
             menu.Items.Add(palMenu);
 
             var sizeMenu = new ToolStripMenuItem("大小");
-            foreach (var s in new[] { 0.7f, 1.0f, 1.35f })
+            foreach (var s in new[] { 0.7f, 0.85f, 1.0f, 1.35f })
             {
                 var it = new ToolStripMenuItem(s.ToString("0.0") + "x") { Checked = Math.Abs(Zoom - s) < .01f };
                 var cap = s;
@@ -223,9 +225,10 @@ namespace DesktopCat
             }
         }
 
-        void ApplySize()
+        public void ApplySize()
         {
             var oldBottom = y + Height;
+            SpriteArt.ZoomStretch = Zoom;
             Size = new Size((int)(Art.VW * Zoom), (int)(Art.VH * Zoom));
             var wa = Screen.PrimaryScreen.WorkingArea;
             y = Math.Min(oldBottom, wa.Bottom) - Height;
@@ -254,6 +257,33 @@ namespace DesktopCat
         }
 
         double Now() { return (DateTime.Now - startTime).TotalSeconds; }
+
+        public void MockState(string kind)
+        {
+            var wa = Screen.PrimaryScreen.WorkingArea;
+            if (kind == "ceil")
+            {
+                state = PetState.Ceil; faceRight = true; ceilT = 0;
+                x = wa.Left + (wa.Width - Width) / 2f; y = wa.Top;
+            }
+            else if (kind == "ground")
+            {
+                state = PetState.Sit; y = wa.Bottom - Height;
+                x = wa.Left + (wa.Width - Width) / 2f;
+            }
+            else if (kind == "edge")
+            {
+                AutoWalk = true; forceClimb = true; nextClimbAt = 0;
+                faceRight = false; x = wa.Left + 12; y = wa.Bottom - Height;
+                state = PetState.Walk; stateT = 0;
+            }
+            else if (kind == "climb")
+            {
+                state = PetState.Climb; wallSide = -1;
+                x = wa.Left; y = wa.Bottom - Height - 260;
+            }
+            ApplySize(); Render();
+        }
 
         void ToSit()
         {
@@ -325,7 +355,7 @@ namespace DesktopCat
             }
 
             // 站在窗口顶上：跟着窗口走；窗口没了/隐藏了 → 掉下去
-            if (state != PetState.Drag && state != PetState.Fall && standHwnd != IntPtr.Zero)
+            if (state != PetState.Drag && state != PetState.Fall && state != PetState.Climb && state != PetState.Ceil && standHwnd != IntPtr.Zero)
             {
                 var st = FindPlat(standHwnd);
                 if (st == null) { standHwnd = IntPtr.Zero; vy = 0; state = PetState.Fall; stateT = 0; }
@@ -422,11 +452,44 @@ namespace DesktopCat
                 }
                 else
                 {
-                    if (x < wa.Left - 10) { x = wa.Left - 10; faceRight = true; }
-                    if (x + Width > wa.Right + 10) { x = wa.Right + 10 - Width; faceRight = false; }
+                    bool canClimb = AutoWalk && now > nextClimbAt;
+                    if (x < wa.Left)
+                    {
+                        x = wa.Left;
+                        if (canClimb && (forceClimb || rng.NextDouble() < 0.6)) { forceClimb = false; wallSide = -1; state = PetState.Climb; stateT = 0; nextClimbAt = now + 20 + rng.NextDouble() * 25; }
+                        else faceRight = true;
+                    }
+                    else if (x + Width > wa.Right)
+                    {
+                        x = wa.Right - Width;
+                        if (canClimb && (forceClimb || rng.NextDouble() < 0.6)) { forceClimb = false; wallSide = 1; state = PetState.Climb; stateT = 0; nextClimbAt = now + 20 + rng.NextDouble() * 25; }
+                        else faceRight = false;
+                    }
                 }
                 if (AutoWalk == false && stateT > .1) ToSit();
                 if (stateT > 4 + new Random().NextDouble() * 4) { ToSit(); }
+            }
+            else if (state == PetState.Climb)
+            {
+                y -= 190f * (float)dt;
+                x = wallSide < 0 ? wa.Left : wa.Right - Width;
+                walkPhase += dt * 2.4;
+                if (y <= wa.Top)
+                {
+                    y = wa.Top; state = PetState.Ceil; stateT = 0; ceilT = 0;
+                    faceRight = wallSide < 0;
+                }
+            }
+            else if (state == PetState.Ceil)
+            {
+                x += (faceRight ? 85f : -85f) * (float)dt;
+                y = wa.Top;
+                walkPhase += dt * 2.2;
+                if (x < wa.Left) { x = wa.Left; faceRight = true; }
+                else if (x + Width > wa.Right) { x = wa.Right - Width; faceRight = false; }
+                ceilT += dt;
+                // 在顶上走着走着会松手掉下去（平均撑 3 秒左右）
+                if (ceilT > 2.5 && rng.NextDouble() < 0.32 * dt) { state = PetState.Fall; vy = 0; stateT = 0; ceilT = 0; }
             }
             else
             {
@@ -535,22 +598,23 @@ namespace DesktopCat
                             bg.ScaleTransform(ss, ss);
                             if (squash > 0.01f)
                             {
-                                bg.TranslateTransform(Art.VW / 2f, Art.VH - 14);
+                                bg.TranslateTransform(Art.VW / 2f, Art.VH - 1);
                                 bg.ScaleTransform(1f + squash * .16f, 1f - squash * .20f);
-                                bg.TranslateTransform(-Art.VW / 2f, -(Art.VH - 14));
+                                bg.TranslateTransform(-Art.VW / 2f, -(Art.VH - 1));
                             }
-                            if (state == PetState.Walk && !faceRight)
+                            bool mirrored = (state == PetState.Ceil) ? faceRight : !faceRight;
+                            if ((state == PetState.Walk || state == PetState.Ceil || state == PetState.Climb) && mirrored)
                             {
                                 bg.TranslateTransform(Art.VW, 0);
                                 bg.ScaleTransform(-1, 1);
                             }
                             bool drawn = false;
-                            if (state == PetState.Walk)
-                                drawn = SpriteArt.DrawWalking(bg, Palette.Key, Art.VW / 2f, Art.VH - 14, 186f * Zoom, Now(), walkPhase, faceRight, 244f * Zoom);
+                            if (state == PetState.Walk || state == PetState.Ceil || state == PetState.Climb)
+                                drawn = SpriteArt.DrawWalking(bg, Palette.Key, Art.VW / 2f, Art.VH - 1, 186f * Zoom, Now(), walkPhase, faceRight, 244f * Zoom);
                             else if (sleepAmt > .5f)
-                                drawn = SpriteArt.DrawSitting(bg, Palette.Key, Art.VW / 2f, Art.VH - 14, 186f * Zoom, Now(), squash, true, 240f * Zoom, lookX, lookY, blink, kneadPhase, false, ss);
+                                drawn = SpriteArt.DrawSitting(bg, Palette.Key, Art.VW / 2f, Art.VH - 1, 186f * Zoom, Now(), squash, true, 240f * Zoom, lookX, lookY, blink, kneadPhase, false, ss);
                             else
-                                drawn = SpriteArt.DrawSitting(bg, Palette.Key, Art.VW / 2f, Art.VH - 14, 186f * Zoom, Now(), squash, false, 240f * Zoom, lookX, lookY, blink, kneadPhase, kneadPhase > 0, ss);
+                                drawn = SpriteArt.DrawSitting(bg, Palette.Key, Art.VW / 2f, Art.VH - 1, 186f * Zoom, Now(), squash, false, 240f * Zoom, lookX, lookY, blink, kneadPhase, kneadPhase > 0, ss);
                             if (!drawn)
                             {
                                 if (state == PetState.Walk) Art.DrawWalking(bg, Palette, Now(), walkPhase, faceRight, 1f);
@@ -558,7 +622,26 @@ namespace DesktopCat
                                 else Art.DrawSitting(bg, Palette, Now(), lookX, lookY, blink, sleepAmt, yawn, kneadPhase, faceRight);
                             }
                         }
-                        g.DrawImage(big, new Rectangle(0, 0, w, h));
+                        if (state == PetState.Ceil || state == PetState.Climb)
+                        {
+                            using (var rot = new Bitmap(Art.VW * ss, Art.VH * ss, PixelFormat.Format32bppArgb))
+                            {
+                                using (var rg = Graphics.FromImage(rot))
+                                {
+                                    rg.Clear(Color.Transparent);
+                                    rg.SmoothingMode = SmoothingMode.AntiAlias;
+                                    rg.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                                    rg.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                                    rg.TranslateTransform(Art.VW * ss / 2f, Art.VH * ss / 2f);
+                                    rg.RotateTransform(state == PetState.Ceil ? 180f : (wallSide < 0 ? 90f : -90f));
+                                    rg.ScaleTransform(state == PetState.Ceil ? 1f : 0.88f, state == PetState.Ceil ? 1f : 0.88f);
+                                    rg.TranslateTransform(-Art.VW * ss / 2f, -Art.VH * ss / 2f);
+                                    rg.DrawImage(big, 0, 0);
+                                }
+                                g.DrawImage(rot, new Rectangle(0, 0, w, h));
+                            }
+                        }
+                        else g.DrawImage(big, new Rectangle(0, 0, w, h));
                     }
                 }
                 if (DebugDir != null && dbgN <= 3) bmp.Save(Path.Combine(DebugDir, "render" + dbgN + ".png"), System.Drawing.Imaging.ImageFormat.Png);
@@ -1031,6 +1114,7 @@ namespace DesktopCat
                     else if (k == "scale") { float s; if (float.TryParse(v, System.Globalization.NumberStyles.Float, System.Globalization.CultureInfo.InvariantCulture, out s)) f.Zoom = s; }
                     else if (k == "walk") f.AutoWalk = v == "1";
                 }
+                f.ApplySize();
             }
             catch { }
         }
@@ -1067,6 +1151,14 @@ namespace DesktopCat
         [STAThread]
         static void Main(string[] args)
         {
+            if (args.Length >= 3 && args[0] == "--mock")
+            {
+                PetForm.DebugDir = args[1];
+                Directory.CreateDirectory(args[1]);
+                var fm = new PetForm { AutoWalk = false };
+                fm.MockState(args[2]);
+                Application.Run(fm); return;
+            }
             if (args.Length >= 2 && args[0] == "--debugdir")
             {
                 PetForm.DebugDir = args[1];

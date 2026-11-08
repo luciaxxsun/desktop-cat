@@ -361,7 +361,8 @@ namespace DesktopCat
                         DrawImgAlpha(sg, bmp, new RectangleF(0, 0, bw, bh), p);
                     }
                 }
-                var dest = new RectangleF(cx - dw / 2f, groundY - dh, dw, dh);
+                float padPx = BottomPad(bmp) * (dh / bmp.Height);
+                var dest = new RectangleF(cx - dw / 2f, groundY - dh + padPx, dw, dh);
                 float lean = Math.Max(-1f, Math.Min(1f, lookX)) * 2.2f;
                 if (Math.Abs(lean) > 0.2f && !isSleep)
                 {
@@ -394,7 +395,8 @@ namespace DesktopCat
             g.TranslateTransform(cx, groundY);
             if (!right) g.ScaleTransform(-1, 1);
             g.RotateTransform(tilt);
-            DrawImg(g, bmp, new RectangleF(-w / 2f, -h + bob, w, h));
+            float wpad = BottomPad(bmp) * (h / bmp.Height);
+            DrawImg(g, bmp, new RectangleF(-w / 2f, -h + bob + wpad, w, h));
             g.Restore(st);
             return true;
         }
@@ -539,6 +541,27 @@ namespace DesktopCat
             return w;
         }
 
+        static readonly Dictionary<string, int> PadCache = new Dictionary<string, int>();
+
+        /// <summary>素材底部透明留白（像素行数）：绘制时补回来，脚才能真的踩在线上。</summary>
+        static int BottomPad(Bitmap bmp)
+        {
+            string id = bmp.Width + "x" + bmp.Height + "#" + bmp.GetHashCode();
+            int v;
+            if (PadCache.TryGetValue(id, out v)) return v;
+            int last = 0;
+            for (int yy = bmp.Height - 1; yy >= 0; yy--)
+            {
+                bool any = false;
+                for (int xx = 0; xx < bmp.Width; xx += 2)
+                    if (bmp.GetPixel(xx, yy).A > 60) { any = true; break; }
+                if (any) { last = yy; break; }
+            }
+            v = bmp.Height - 1 - last;
+            PadCache[id] = v;
+            return v;
+        }
+
         struct StretchGeo { public float W, H, HeadY, Ang; }
 
         /// <summary>算拉伸姿态的几何：头贴鼠标、身子往下垂，脚不许穿地。</summary>
@@ -568,10 +591,8 @@ namespace DesktopCat
             }
             g.W = bmp.Width * s;
             float naturalH = bmp.Height * s;
-            float k = 0.94f + (len - 180f) / 1400f;
-            if (k < 0.94f) k = 0.94f;
-            if (k > 1.30f) k = 1.30f;
-            g.H = naturalH * k;
+            // 不变形：拎起来就用原版比例（拉长反而不好看）
+            g.H = naturalH;
 
             // 头跟着鼠标，但整只猫的脚不能穿到地面以下
             float lowestHead = basePt.Y - g.H * 0.96f;
