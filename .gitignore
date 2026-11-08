@@ -28,3 +28,11 @@ __pycache__/
 *.user
 .DS_Store
 Thumbs.db
+ps*
+psx
+res*.txt
+run.log
+*.log
+dist/
+*.bak13
+tools/*.exe
