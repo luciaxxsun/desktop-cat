@@ -562,6 +562,218 @@ namespace DesktopCat
             return v;
         }
 
+        static readonly Dictionary<string, int[]> SideCache = new Dictionary<string, int[]>();
+
+        /// <summary>素材左右透明留白（像素列数）。</summary>
+        static int[] SidePad(Bitmap bmp)
+        {
+            string id = "S" + bmp.Width + "x" + bmp.Height + "#" + bmp.GetHashCode();
+            int[] v;
+            if (SideCache.TryGetValue(id, out v)) return v;
+            int left = 0, right = 0;
+            for (int xx = 0; xx < bmp.Width; xx++)
+            {
+                bool any = false;
+                for (int yy = 0; yy < bmp.Height; yy += 2)
+                    if (bmp.GetPixel(xx, yy).A > 60) { any = true; break; }
+                if (any) { left = xx; break; }
+            }
+            for (int xx = bmp.Width - 1; xx >= 0; xx--)
+            {
+                bool any = false;
+                for (int yy = 0; yy < bmp.Height; yy += 2)
+                    if (bmp.GetPixel(xx, yy).A > 60) { any = true; break; }
+                if (any) { right = bmp.Width - 1 - xx; break; }
+            }
+            v = new[] { left, right };
+            SideCache[id] = v;
+            return v;
+        }
+
+        /// <summary>贴着左/右墙往上爬：头朝上、身子贴着墙面，只轻轻左右晃。</summary>
+        public static bool DrawClimbing(Graphics g, string key, bool wallLeft, float frameW, float groundY,
+            float targetH, double t, double phase, float maxW)
+        {
+            var bmp = Get(key + "_walk");
+            if (bmp == null) return false;
+            float sA = AreaScale(key, key + "_walk", bmp, targetH);
+            float s = Math.Min(sA, Math.Min(maxW / bmp.Width, targetH * 1.35f / bmp.Height));
+            float w = bmp.Width * s, h = bmp.Height * s;
+            var pad = SidePad(bmp);
+            float rp = pad[1] * s, lp = pad[0] * s;
+            float cx = wallLeft ? (w / 2f - rp + 2f) : (frameW - w / 2f + lp - 2f);
+            float tilt = (float)Math.Sin(phase * 2 * Math.PI) * 3.0f;
+
+            var st = g.Save();
+            g.TranslateTransform(cx, groundY);
+            if (wallLeft) g.ScaleTransform(-1, 1);
+            g.RotateTransform(wallLeft ? -tilt : tilt);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            DrawImg(g, bmp, new RectangleF(-w / 2f, -h, w, h));
+            g.Restore(st);
+            return true;
+        }
+
+
+        // ───────── 爬墙 / 天花板：把姿势图整体转成所需朝向，一次算好缓存起来 ─────────
+        class RotSprite
+        {
+            public Bitmap Bmp;
+            public int Left, Top, Right, Bottom;   // 相对整块画布的不透明边界
+        }
+
+        static readonly Dictionary<string, RotSprite> RotCache = new Dictionary<string, RotSprite>();
+
+        static RotSprite BuildRot(string key, string pose, float ang, bool flip, float targetH, float maxW)
+        {
+            string id = key + "|" + pose + "|" + ang.ToString("0") + "|" + flip + "|" + targetH.ToString("0.0");
+            RotSprite rs;
+            if (RotCache.TryGetValue(id, out rs)) return rs;
+
+            var bmp = Get(key + "_" + pose);
+            if (bmp == null) return null;
+
+            float sA = AreaScale(key, key + "_" + pose, bmp, targetH);
+            float s = Math.Min(sA, Math.Min(maxW / bmp.Width, targetH * 1.35f / bmp.Height));
+            int w = Math.Max(1, (int)(bmp.Width * s)), h = Math.Max(1, (int)(bmp.Height * s));
+
+            // 1) 缩放；需要镜像就在图片自身坐标里先翻好
+            using (var src = new Bitmap(w, h, PixelFormat.Format32bppArgb))
+            {
+                using (var sg = Graphics.FromImage(src))
+                {
+                    sg.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    sg.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    if (flip)
+                    {
+                        sg.TranslateTransform(w, 0);
+                        sg.ScaleTransform(-1, 1);
+                    }
+                    sg.DrawImage(bmp, new Rectangle(0, 0, w, h));
+                }
+
+                // 2) 再整体旋转
+                double rad = ang * Math.PI / 180.0;
+                int cw = (int)Math.Ceiling(Math.Abs(w * Math.Cos(rad)) + Math.Abs(h * Math.Sin(rad))) + 4;
+                int ch = (int)Math.Ceiling(Math.Abs(w * Math.Sin(rad)) + Math.Abs(h * Math.Cos(rad))) + 4;
+                var rot = new Bitmap(cw, ch, PixelFormat.Format32bppArgb);
+                using (var rg = Graphics.FromImage(rot))
+                {
+                    rg.Clear(Color.Transparent);
+                    rg.InterpolationMode = InterpolationMode.HighQualityBicubic;
+                    rg.PixelOffsetMode = PixelOffsetMode.HighQuality;
+                    rg.SmoothingMode = SmoothingMode.AntiAlias;
+                    if (Math.Abs(ang) > 0.01f)
+                    {
+                        rg.TranslateTransform(cw / 2f, ch / 2f);
+                        rg.RotateTransform(ang);
+                        rg.DrawImage(src, new RectangleF(-w / 2f, -h / 2f, w, h));
+                    }
+                    else
+                    {
+                        rg.DrawImage(src, new RectangleF((cw - w) / 2f, (ch - h) / 2f, w, h));
+                    }
+                }
+
+                // 3) 量不透明边界，用来贴墙/贴顶对齐
+                int l = cw, t = ch, r = -1, bo = -1;
+                for (int yy = 0; yy < ch; yy++)
+                    for (int xx = 0; xx < cw; xx++)
+                        if (rot.GetPixel(xx, yy).A > 40)
+                        {
+                            if (xx < l) l = xx;
+                            if (xx > r) r = xx;
+                            if (yy < t) t = yy;
+                            if (yy > bo) bo = yy;
+                        }
+                if (r < 0) { l = t = 0; r = cw - 1; bo = ch - 1; }
+                rs = new RotSprite { Bmp = rot, Left = l, Top = t, Right = r, Bottom = bo };
+                RotCache[id] = rs;
+                return rs;
+            }
+        }
+
+        /// <summary>
+        /// 爬墙：朝向跟着走向走（Lucia 定的对应表）
+        ///   往上爬：左墙=不转+镜像，右墙=不转
+        ///   往下爬：左墙=顺时针90，右墙=顺时针90+镜像
+        /// 身体那一侧贴着墙线，垂直方向居中，只加一点上下踮动。
+        /// </summary>
+        public static bool DrawWall(Graphics g, string key, bool wallLeft, bool goingUp, float frameW, float frameH,
+            float targetH, float maxW, double t, double phase)
+        {
+            float ang = goingUp ? 0f : 90f;                 // GDI+ 正角度=顺时针
+            bool flip = goingUp ? wallLeft : !wallLeft;
+            var rs = BuildRot(key, "walk", ang, flip, targetH, maxW);
+            if (rs == null) return false;
+            float bob = (float)Math.Sin(phase * 2 * Math.PI) * 2.5f;
+            float x = wallLeft ? -rs.Left : (frameW - rs.Right - 1);
+            float y = (frameH - (rs.Bottom - rs.Top)) / 2f - rs.Top + bob;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.DrawImage(rs.Bmp, new RectangleF(x, y, rs.Bmp.Width, rs.Bmp.Height));
+            return true;
+        }
+
+        /// <summary>
+        /// 天花板：整只倒过来，脚贴着屏幕顶边。
+        ///   往右走=180+镜像，往左走=180（Lucia 定的）
+        /// </summary>
+        public static bool DrawCeil(Graphics g, string key, bool movingRight, float frameW, float targetH, float maxW,
+            double t, double phase)
+        {
+            var rs = BuildRot(key, "walk", 180f, movingRight, targetH, maxW);
+            if (rs == null) return false;
+            float bob = (float)Math.Sin(phase * 2 * Math.PI) * 2.0f;
+            float x = frameW / 2f - (rs.Left + rs.Right) / 2f;
+            float y = -rs.Top + bob;
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            g.DrawImage(rs.Bmp, new RectangleF(x, y, rs.Bmp.Width, rs.Bmp.Height));
+            return true;
+        }
+
+        static readonly Dictionary<string, int> TopPadCache = new Dictionary<string, int>();
+
+        /// <summary>素材顶部透明留白（像素行数）。</summary>
+        static int TopPad(Bitmap bmp)
+        {
+            string id = "T" + bmp.Width + "x" + bmp.Height + "#" + bmp.GetHashCode();
+            int v;
+            if (TopPadCache.TryGetValue(id, out v)) return v;
+            int first = 0;
+            for (int yy = 0; yy < bmp.Height; yy++)
+            {
+                bool any = false;
+                for (int xx = 0; xx < bmp.Width; xx += 2)
+                    if (bmp.GetPixel(xx, yy).A > 60) { any = true; break; }
+                if (any) { first = yy; break; }
+            }
+            TopPadCache[id] = first;
+            return first;
+        }
+
+        /// <summary>挂在天花板上：前爪扒住上边缘、身子垂下来，头始终朝上。</summary>
+        public static bool DrawHanging(Graphics g, string key, float cx, float topY, float targetH, bool right, double t)
+        {
+            var bmp = Get(key + "_stretch");
+            if (bmp == null) return false;
+            float s = AreaScale(key, key + "_stretch", bmp, targetH);
+            float w = bmp.Width * s, h = bmp.Height * s;
+            float tp = TopPad(bmp) * s;
+            float sway = (float)Math.Sin(t * 2.0) * 3.2f * (right ? 1f : -1f);
+
+            var st = g.Save();
+            g.TranslateTransform(cx, topY);
+            g.RotateTransform(sway);
+            g.InterpolationMode = InterpolationMode.HighQualityBicubic;
+            g.PixelOffsetMode = PixelOffsetMode.HighQuality;
+            DrawImg(g, bmp, new RectangleF(-w / 2f, tp, w, h));
+            g.Restore(st);
+            return true;
+        }
+
         struct StretchGeo { public float W, H, HeadY, Ang; }
 
         /// <summary>算拉伸姿态的几何：头贴鼠标、身子往下垂，脚不许穿地。</summary>

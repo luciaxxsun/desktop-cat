@@ -77,7 +77,7 @@ namespace DesktopCat
 
         PetState state = PetState.Sit;
         double t0 = 0, stateT = 0, walkPhase = 0, nextWalkAt = 6 + new Random().NextDouble() * 8;
-        int wallSide = -1; double ceilT = 0, nextClimbAt = 10; bool forceClimb = false;
+        int wallSide = -1; double ceilT = 0, nextClimbAt = 10; bool forceClimb = false; bool climbUp = true;
         readonly Random rng = new Random();
         bool faceRight = true;
         float lookX = 0, lookY = 0, blink = 0, sleepAmt = 0, yawn = 0, kneadPhase = 0, grabHeadDY = 12f;
@@ -279,8 +279,33 @@ namespace DesktopCat
             }
             else if (kind == "climb")
             {
-                state = PetState.Climb; wallSide = -1;
+                state = PetState.Climb; wallSide = -1; climbUp = true;
                 x = wa.Left; y = wa.Bottom - Height - 260;
+            }
+            else if (kind == "climbdown")
+            {
+                state = PetState.Climb; wallSide = -1; climbUp = false;
+                x = wa.Left; y = wa.Bottom - Height - 260;
+            }
+            else if (kind == "climbdownR")
+            {
+                state = PetState.Climb; wallSide = 1; climbUp = false;
+                x = wa.Right - Width; y = wa.Bottom - Height - 260;
+            }
+            else if (kind == "climbR")
+            {
+                state = PetState.Climb; wallSide = 1; climbUp = true;
+                x = wa.Right - Width; y = wa.Bottom - Height - 260;
+            }
+            else if (kind == "ceilL")
+            {
+                state = PetState.Ceil; faceRight = false; ceilT = 0;
+                x = wa.Left + (wa.Width - Width) / 2f; y = wa.Top;
+            }
+            else if (kind == "ceilR")
+            {
+                state = PetState.Ceil; faceRight = true; ceilT = 0;
+                x = wa.Left + (wa.Width - Width) / 2f; y = wa.Top;
             }
             ApplySize(); Render();
         }
@@ -471,13 +496,21 @@ namespace DesktopCat
             }
             else if (state == PetState.Climb)
             {
-                y -= 190f * (float)dt;
                 x = wallSide < 0 ? wa.Left : wa.Right - Width;
                 walkPhase += dt * 2.4;
-                if (y <= wa.Top)
+                if (climbUp)
                 {
-                    y = wa.Top; state = PetState.Ceil; stateT = 0; ceilT = 0;
-                    faceRight = wallSide < 0;
+                    y -= 190f * (float)dt;
+                    if (y <= wa.Top)
+                    {
+                        y = wa.Top; state = PetState.Ceil; stateT = 0; ceilT = 0;
+                        faceRight = wallSide < 0 ? true : false;
+                    }
+                }
+                else
+                {
+                    y += 150f * (float)dt;
+                    if (y + Height >= wa.Bottom) { y = wa.Bottom - Height; standHwnd = IntPtr.Zero; ToSit(); }
                 }
             }
             else if (state == PetState.Ceil)
@@ -485,8 +518,14 @@ namespace DesktopCat
                 x += (faceRight ? 85f : -85f) * (float)dt;
                 y = wa.Top;
                 walkPhase += dt * 2.2;
-                if (x < wa.Left) { x = wa.Left; faceRight = true; }
-                else if (x + Width > wa.Right) { x = wa.Right - Width; faceRight = false; }
+                if (x < wa.Left)
+                {
+                    x = wa.Left; state = PetState.Climb; climbUp = false; wallSide = -1; stateT = 0;
+                }
+                else if (x + Width > wa.Right)
+                {
+                    x = wa.Right - Width; state = PetState.Climb; climbUp = false; wallSide = 1; stateT = 0;
+                }
                 ceilT += dt;
                 // 在顶上走着走着会松手掉下去（平均撑 3 秒左右）
                 if (ceilT > 2.5 && rng.NextDouble() < 0.32 * dt) { state = PetState.Fall; vy = 0; stateT = 0; ceilT = 0; }
@@ -602,14 +641,19 @@ namespace DesktopCat
                                 bg.ScaleTransform(1f + squash * .16f, 1f - squash * .20f);
                                 bg.TranslateTransform(-Art.VW / 2f, -(Art.VH - 1));
                             }
-                            bool mirrored = (state == PetState.Ceil) ? faceRight : !faceRight;
-                            if ((state == PetState.Walk || state == PetState.Ceil || state == PetState.Climb) && mirrored)
+                            // 爬墙：不旋转、头朝上，贴着墙面往上走
+                            bool wallLeft = (wallSide < 0);
+                            if (state == PetState.Walk && !faceRight)
                             {
                                 bg.TranslateTransform(Art.VW, 0);
                                 bg.ScaleTransform(-1, 1);
                             }
                             bool drawn = false;
-                            if (state == PetState.Walk || state == PetState.Ceil || state == PetState.Climb)
+                            if (state == PetState.Ceil)
+                                drawn = SpriteArt.DrawCeil(bg, Palette.Key, faceRight, Art.VW, 186f * Zoom, 244f * Zoom, Now(), walkPhase);
+                            else if (state == PetState.Climb)
+                                drawn = SpriteArt.DrawWall(bg, Palette.Key, wallLeft, climbUp, Art.VW, Art.VH, 186f * Zoom, 244f * Zoom, Now(), walkPhase);
+                            else if (state == PetState.Walk)
                                 drawn = SpriteArt.DrawWalking(bg, Palette.Key, Art.VW / 2f, Art.VH - 1, 186f * Zoom, Now(), walkPhase, faceRight, 244f * Zoom);
                             else if (sleepAmt > .5f)
                                 drawn = SpriteArt.DrawSitting(bg, Palette.Key, Art.VW / 2f, Art.VH - 1, 186f * Zoom, Now(), squash, true, 240f * Zoom, lookX, lookY, blink, kneadPhase, false, ss);
@@ -622,26 +666,7 @@ namespace DesktopCat
                                 else Art.DrawSitting(bg, Palette, Now(), lookX, lookY, blink, sleepAmt, yawn, kneadPhase, faceRight);
                             }
                         }
-                        if (state == PetState.Ceil || state == PetState.Climb)
-                        {
-                            using (var rot = new Bitmap(Art.VW * ss, Art.VH * ss, PixelFormat.Format32bppArgb))
-                            {
-                                using (var rg = Graphics.FromImage(rot))
-                                {
-                                    rg.Clear(Color.Transparent);
-                                    rg.SmoothingMode = SmoothingMode.AntiAlias;
-                                    rg.InterpolationMode = InterpolationMode.HighQualityBicubic;
-                                    rg.PixelOffsetMode = PixelOffsetMode.HighQuality;
-                                    rg.TranslateTransform(Art.VW * ss / 2f, Art.VH * ss / 2f);
-                                    rg.RotateTransform(state == PetState.Ceil ? 180f : (wallSide < 0 ? 90f : -90f));
-                                    rg.ScaleTransform(state == PetState.Ceil ? 1f : 0.88f, state == PetState.Ceil ? 1f : 0.88f);
-                                    rg.TranslateTransform(-Art.VW * ss / 2f, -Art.VH * ss / 2f);
-                                    rg.DrawImage(big, 0, 0);
-                                }
-                                g.DrawImage(rot, new Rectangle(0, 0, w, h));
-                            }
-                        }
-                        else g.DrawImage(big, new Rectangle(0, 0, w, h));
+                        g.DrawImage(big, new Rectangle(0, 0, w, h));
                     }
                 }
                 if (DebugDir != null && dbgN <= 3) bmp.Save(Path.Combine(DebugDir, "render" + dbgN + ".png"), System.Drawing.Imaging.ImageFormat.Png);
