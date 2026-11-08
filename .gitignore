@@ -1,0 +1,30 @@
+# 编译产物
+*.exe
+*.pdb
+build.log
+
+# 美术素材（不随仓库分发）
+assets/
+assets_*/
+incoming/
+art/
+
+# 截图 / 调试产物
+frames/
+dbg*/
+ps*/
+ps2_*/
+ps3_*/
+ps4_*/
+ps5_*/
+ps6_*/
+ps7_*/
+
+# Python / 编辑器
+__pycache__/
+*.pyc
+*.bak*
+.vs/
+*.user
+.DS_Store
+Thumbs.db
